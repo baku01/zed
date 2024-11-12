@@ -1,8 +1,8 @@
-name: Build Windows
+name: Build Zed Nightly
 
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: "0 */4 * * *" # Executa a cada 4 horas
   workflow_dispatch:
 
 jobs:
@@ -10,23 +10,82 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
-      with:
-        path: zed
+      # Habilitar caminhos longos no Git
+      - name: Habilitar caminhos longos no Git
+        run: |
+          git config --system core.longpaths true
 
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        profile: minimal
-        override: true
+      # Habilitar caminhos longos no Windows
+      - name: Habilitar caminhos longos no Windows
+        shell: powershell
+        run: |
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
 
-    - name: Build
-      run: cd zed && cargo build --release
+      # Fazer checkout do repositório
+      - name: Checkout do repositório
+        uses: actions/checkout@v3
 
-    - name: Archive Build
-      uses: actions/upload-artifact@v3
-      with:
-        name: build-windows
-        path: zed/target/release/
+      # Instalar Rust nightly com o alvo wasm32-wasi
+      - name: Instalar Rust nightly
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+          target: wasm32-wasi
+
+      # Cache do cargo para economizar tempo de build
+      - name: Cache cargo
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.OS }}-cargo-
+
+      # Compilar a versão release
+      - name: Compilar release
+        run: cargo build --release
+
+      # Arquivar o build
+      - name: Arquivar build
+        uses: actions/upload-artifact@v3
+        with:
+          name: zed-release
+          path: target/release/zed.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # Baixar o artefato de release
+      - name: Baixar o artefato de release
+        uses: actions/download-artifact@v3
+        with:
+          name: zed-release
+          path: zed-release
+
+      # Obter a data atual
+      - name: Obter a data atual
+        id: date
+        run: echo "current_date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
+      # Compactar o artefato de release
+      - name: Compactar o artefato de release
+        run: zip -j zed-windows.zip zed-release/zed.exe
+
+      # Fazer upload para o GitHub Release
+      - name: Fazer upload para o GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.date.outputs.current_date }}
+          release_name: "Zed Nightly ${{ steps.date.outputs.current_date }}"
+          draft: false
+          prerelease: false
+          artifacts: zed-windows.zip
