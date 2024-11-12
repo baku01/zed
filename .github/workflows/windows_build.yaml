@@ -1,96 +1,180 @@
-name: Build Zed Nightly
+name: Build Zed Fork
 
 on:
+  # Executa a cada 4 horas para verificar atualizações no repositório base
   schedule:
-    - cron: "0 */4 * * *" # Executa a cada 4 horas
+    - cron: '0 */4 * * *'
+  # Permite execução manual
   workflow_dispatch:
+  # Monitora pushes no seu fork
+  push:
+    branches: [ main, master ]
+  # Monitora o repositório base
+  repository_dispatch:
+    types: [upstream_push]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-D warnings"
+  # Defina aqui o repositório base
+  UPSTREAM_REPO: "zed-industries/zed"
+  BASE_BRANCH: "main"  # ou master, dependendo do branch principal do projeto base
 
 jobs:
+  check_upstream:
+    name: Verificar Atualizações Upstream
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      base_sha: ${{ steps.check.outputs.base_sha }}
+    
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar atualizações no repositório base
+        id: check
+        run: |
+          # Adiciona o repositório base como remote
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
+          git fetch upstream
+
+          # Obtém o último commit do repositório base
+          BASE_SHA=$(git rev-parse upstream/${{ env.BASE_BRANCH }})
+          echo "base_sha=$BASE_SHA" >> $GITHUB_OUTPUT
+          
+          # Verifica se precisamos buildar (novo commit ou workflow manual)
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || \
+             [[ "${{ github.event_name }}" == "push" ]] || \
+             [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          else
+            # Verifica se há commits novos desde o último build
+            LAST_BUILD_SHA=$(git rev-parse HEAD || echo "")
+            if [[ "$LAST_BUILD_SHA" != "$BASE_SHA" ]]; then
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            else
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
   build:
+    needs: check_upstream
+    if: needs.check_upstream.outputs.should_build == 'true'
+    name: Build Zed
     runs-on: windows-latest
+    timeout-minutes: 60
 
     steps:
-      # Habilitar caminhos longos no Git
-      - name: Habilitar caminhos longos no Git
+      - name: Configurar caminhos longos no Git
         run: |
           git config --system core.longpaths true
+        shell: bash
 
-      # Habilitar caminhos longos no Windows
-      - name: Habilitar caminhos longos no Windows
+      - name: Configurar caminhos longos no Windows
         shell: powershell
         run: |
           New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
             -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
 
-      # Fazer checkout do repositório
-      - name: Checkout do repositório
-        uses: actions/checkout@v3
-
-      # Instalar Rust nightly com o alvo wasm32-wasip1
-      - name: Instalar Rust nightly
-        uses: actions-rs/toolchain@v1
+      - name: Checkout do repositório base
+        uses: actions/checkout@v4
         with:
-          profile: minimal
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ needs.check_upstream.outputs.base_sha }}
+          fetch-depth: 1
+
+      - name: Instalar toolchain Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
           toolchain: nightly
-          override: true
-          target: wasm32-wasip1
+          targets: wasm32-wasi
+          components: rustfmt, clippy
 
-      # Cache do cargo para economizar tempo de build
-      - name: Cache cargo
-        uses: actions/cache@v3
+      - name: Cache do Rust
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.OS }}-cargo-
+          shared-key: "windows-build"
+          cache-on-failure: true
 
-      # Compilar a versão release
-      - name: Compilar release
-        run: cargo build --release
+      - name: Verificar formatação do código
+        run: cargo fmt --check
+        
+      - name: Executar Clippy
+        run: cargo clippy -- -D warnings
+        
+      - name: Compilar em modo release
+        run: |
+          cargo build --release
+          if (-not (Test-Path "target/release/zed.exe")) {
+            exit 1
+          }
+        shell: pwsh
 
-      # Arquivar o build
-      - name: Arquivar build
+      - name: Preparar artefato para upload
+        run: |
+          mkdir -p artifacts
+          cp target/release/zed.exe artifacts/
+        shell: bash
+
+      - name: Upload do artefato
         uses: actions/upload-artifact@v3
         with:
-          name: zed-release
-          path: target/release/zed.exe
+          name: zed-windows
+          path: artifacts/zed.exe
+          retention-days: 5
 
   release:
-    needs: build
+    needs: [check_upstream, build]
+    if: needs.check_upstream.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
+    
     steps:
-      # Baixar o artefato de release
-      - name: Baixar o artefato de release
+      - name: Download do artefato
         uses: actions/download-artifact@v3
         with:
-          name: zed-release
-          path: zed-release
+          name: zed-windows
+          path: ./
 
-      # Obter a data atual
-      - name: Obter a data atual
-        id: date
-        run: echo "current_date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
-
-      # Delete existing release if it exists
-      - name: Delete existing release
+      - name: Configurar data e hash
+        id: info
         run: |
-          gh release delete ${{ steps.date.outputs.current_date }} --yes
+          echo "current_date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+          echo "commit_sha=${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
 
-      # Compactar o artefato de release
-      - name: Compactar o artefato de release
-        run: zip -j zed-windows.zip zed-release/zed.exe
+      - name: Remover release anterior
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete ${{ steps.info.outputs.current_date }} --yes || true
+        continue-on-error: true
 
-      # Fazer upload para o GitHub Release
-      - name: Fazer upload para o GitHub Release
+      - name: Criar arquivo ZIP
+        run: |
+          zip -j zed-windows.zip zed.exe
+          sha256sum zed-windows.zip > zed-windows.zip.sha256
+
+      - name: Criar Release
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ steps.date.outputs.current_date }}
-          release_name: "Zed Nightly ${{ steps.date.outputs.current_date }}"
+          tag: ${{ steps.info.outputs.current_date }}
+          name: "Zed Build ${{ steps.info.outputs.current_date }}"
+          body: |
+            Build automático do Zed para Windows
+            Data: ${{ steps.info.outputs.current_date }}
+            Commit base: ${{ needs.check_upstream.outputs.base_sha }}
+            
+            SHA256 Checksum:
+            ```
+            $(cat zed-windows.zip.sha256)
+            ```
           draft: false
-          prerelease: false
-          artifacts: zed-windows.zip
+          prerelease: true
+          artifacts: "zed-windows.zip,zed-windows.zip.sha256"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          allowUpdates: true
