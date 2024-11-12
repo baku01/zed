@@ -12,6 +12,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
+      with:
+        path: zed
 
     - name: Set up Rust
       uses: actions-rs/toolchain@v1
@@ -21,10 +23,10 @@ jobs:
         override: true
 
     - name: Build
-      run: cargo build --release
+      run: cd zed && cargo build --release
 
     - name: Archive Build
       uses: actions/upload-artifact@v3
       with:
         name: build-windows
-        path: target/release/
+        path: zed/target/release/
