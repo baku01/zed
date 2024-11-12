@@ -26,14 +26,14 @@ jobs:
       - name: Checkout do repositório
         uses: actions/checkout@v3
 
-      # Instalar Rust nightly com o alvo wasm32-wasi
+      # Instalar Rust nightly com o alvo wasm32-wasip1
       - name: Instalar Rust nightly
         uses: actions-rs/toolchain@v1
         with:
           profile: minimal
           toolchain: nightly
           override: true
-          target: wasm32-wasi
+          target: wasm32-wasip1
 
       # Cache do cargo para economizar tempo de build
       - name: Cache cargo
