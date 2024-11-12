@@ -76,6 +76,11 @@ jobs:
         id: date
         run: echo "current_date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
 
+      # Delete existing release if it exists
+      - name: Delete existing release
+        run: |
+          gh release delete ${{ steps.date.outputs.current_date }} --yes
+
       # Compactar o artefato de release
       - name: Compactar o artefato de release
         run: zip -j zed-windows.zip zed-release/zed.exe
