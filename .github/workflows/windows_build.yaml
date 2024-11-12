@@ -1,0 +1,30 @@
+name: Build Windows
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+
+    - name: Build
+      run: cargo build --release
+
+    - name: Archive Build
+      uses: actions/upload-artifact@v2
+      with:
+        name: build-windows
+        path: target/release/
